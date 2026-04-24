@@ -1,0 +1,14 @@
+{
+  "name": "tasks-cli",
+  "version": "1.0.0",
+  "bin": {
+    "tasks": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "typescript": "^6.0.3"
+  }
+}
