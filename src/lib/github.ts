@@ -1,17 +1,54 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { writeFileSync, mkdtempSync, unlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Task, TaskStatus } from "../types";
 
-function execGh(args: string): string {
+/**
+ * Execute a `gh` command safely via execFileSync (no shell interpolation).
+ * Returns trimmed stdout.
+ */
+function execGh(args: string[], input?: Buffer): string {
   try {
-    return execSync(`gh ${args}`, { stdio: "pipe", encoding: "utf-8" }).trim();
+    const result = execFileSync("gh", args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: 10 * 1024 * 1024,
+      encoding: "utf-8",
+      ...(input ? { input } : {}),
+    });
+    return String(result).trim();
   } catch (err: any) {
-    throw new Error(`gh command failed: ${err.stderr?.toString().trim() || err.message}`);
+    const stderr = err.stderr?.toString().trim();
+    throw new Error(`gh command failed: ${stderr || err.message}`);
+  }
+}
+
+/**
+ * Write content to a temporary file and return its path.
+ * Caller is responsible for cleaning up.
+ */
+function writeTempFile(content: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "tasks-cli-"));
+  const filePath = join(dir, "body.md");
+  writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+
+/**
+ * Remove a temp file and its parent directory.
+ */
+function cleanupTempFile(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+    rmSync(join(filePath, ".."), { recursive: true, force: true });
+  } catch {
+    // best effort
   }
 }
 
 export function isGhInstalled(): boolean {
   try {
-    execSync("which gh", { stdio: "pipe" });
+    execFileSync("gh", ["--version"], { stdio: "pipe" });
     return true;
   } catch {
     return false;
@@ -20,7 +57,7 @@ export function isGhInstalled(): boolean {
 
 export function getRepoInfo(): { owner: string; repo: string } | null {
   try {
-    const nameWithOwner = execGh("repo view --json nameWithOwner -q .nameWithOwner");
+    const nameWithOwner = execGh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);
     const [owner, repo] = nameWithOwner.split("/");
     if (!owner || !repo) return null;
     return { owner, repo };
@@ -48,56 +85,88 @@ export function issueStateToLocal(state: string): TaskStatus {
   return state === "closed" ? "done" : "open";
 }
 
-function escapeShell(str: string): string {
-  return str.replace(/"/g, '\\"');
-}
-
 export function createIssue(task: Task, body: string, labels: string[]): number {
-  const title = escapeShell(task.title);
-  const escapedBody = escapeShell(body);
-  const labelArg = labels.length > 0 ? `--label "${labels.join(",")}"` : "";
-  const result = execGh(
-    `issue create --title "${title}" --body "${escapedBody}" ${labelArg} --json number -q .number`
-  );
-  return parseInt(result, 10);
+  const bodyFile = writeTempFile(body);
+  try {
+    const args = [
+      "issue", "create",
+      "--title", task.title,
+      "--body-file", bodyFile,
+      "--json", "number",
+      "-q", ".number",
+    ];
+    if (labels.length > 0) {
+      args.push("--label", labels.join(","));
+    }
+    const result = execGh(args);
+    return parseInt(result, 10);
+  } finally {
+    cleanupTempFile(bodyFile);
+  }
 }
 
 export function updateIssue(issueNumber: number, task: Task, body: string, labels: string[]): void {
-  const title = escapeShell(task.title);
-  const escapedBody = escapeShell(body);
-  const labelArg = labels.length > 0 ? ` --add-label "${labels.join(",")}"` : "";
-  execGh(
-    `issue edit ${issueNumber} --title "${title}" --body "${escapedBody}"${labelArg}`
-  );
+  const bodyFile = writeTempFile(body);
+  try {
+    const args = [
+      "issue", "edit",
+      String(issueNumber),
+      "--title", task.title,
+      "--body-file", bodyFile,
+    ];
+    if (labels.length > 0) {
+      args.push("--add-label", labels.join(","));
+    }
+    execGh(args);
+  } finally {
+    cleanupTempFile(bodyFile);
+  }
 }
 
 export function closeIssue(issueNumber: number): void {
-  execGh(`issue close ${issueNumber}`);
+  execGh(["issue", "close", String(issueNumber)]);
 }
 
 export function reopenIssue(issueNumber: number): void {
-  execGh(`issue reopen ${issueNumber}`);
+  execGh(["issue", "reopen", String(issueNumber)]);
 }
 
 export function listIssues(): { number: number; title: string; state: string; labels: string[] }[] {
-  const result = execGh(
-    `issue list --state all --limit 1000 --json number,title,state,labels -q '.[] | {number, title, state, labels: [.labels[].name]}'`
-  );
-  return JSON.parse(result);
+  const result = execGh([
+    "issue", "list",
+    "--state", "all",
+    "--limit", "1000",
+    "--json", "number,title,state,labels",
+  ]);
+  const parsed: { number: number; title: string; state: string; labels: { name: string }[] }[] = JSON.parse(result);
+  return parsed.map((i) => ({
+    number: i.number,
+    title: i.title,
+    state: i.state,
+    labels: i.labels.map((l) => l.name),
+  }));
 }
 
 export function getLinkedPRs(issueNumber: number): { number: number; title: string; state: string; url: string }[] {
-  const result = execGh(
-    `pr list --search "fixes #${issueNumber} or closes #${issueNumber} or Fixes #${issueNumber} or Closes #${issueNumber}" --state all --limit 100 --json number,title,state,url`
-  );
+  const result = execGh([
+    "pr", "list",
+    "--search", `fixes #${issueNumber} or closes #${issueNumber} or Fixes #${issueNumber} or Closes #${issueNumber}`,
+    "--state", "all",
+    "--limit", "100",
+    "--json", "number,title,state,url",
+  ]);
   return JSON.parse(result);
 }
 
 export function commentOnIssue(issueNumber: number, comment: string): void {
-  const escaped = escapeShell(comment);
-  execGh(`issue comment ${issueNumber} --body "${escaped}"`);
+  const bodyFile = writeTempFile(comment);
+  try {
+    execGh(["issue", "comment", String(issueNumber), "--body-file", bodyFile]);
+  } finally {
+    cleanupTempFile(bodyFile);
+  }
 }
 
 export function getIssueUrl(issueNumber: number): string {
-  return execGh(`issue view ${issueNumber} --json url -q .url`);
+  return execGh(["issue", "view", String(issueNumber), "--json", "url", "-q", ".url"]);
 }

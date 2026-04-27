@@ -33,7 +33,7 @@ export function autoSyncTask(taskId: string): void {
     let remoteStateMap: Map<number, string> | null = null;
     try {
       const issues = listIssues();
-      remoteStateMap = new Map(issues.map((i) => [i.number, i.state]));
+      remoteStateMap = new Map(issues.map((i) => [i.number, i.state.toLowerCase()]));
     } catch {
       // If we can't list issues, we'll just push without state sync
     }

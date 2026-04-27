@@ -99,7 +99,7 @@ function doPush(verbose: boolean, args: string[] = []): { created: number; updat
     const remoteIssues = listIssues();
     remoteStateMap = new Map();
     for (const issue of remoteIssues) {
-      remoteStateMap.set(issue.number, issue.state);
+      remoteStateMap.set(issue.number, issue.state.toLowerCase());
     }
   } catch (e: any) {
     console.error(red(`Failed to list remote issues: ${e.message}`));
@@ -172,7 +172,7 @@ function doPull(verbose: boolean, args: string[] = []): { changed: number; uncha
 
   const remoteMap = new Map<number, { title: string; state: string; labels: string[] }>();
   for (const issue of remoteIssues) {
-    remoteMap.set(issue.number, issue);
+    remoteMap.set(issue.number, { ...issue, state: issue.state.toLowerCase() });
   }
 
   const taskPartial = parseTaskFlag(args);
@@ -235,7 +235,7 @@ function cmdCheck(args: string[]): void {
 
   const remoteMap = new Map<number, { title: string; state: string; labels: string[] }>();
   for (const issue of remoteIssues) {
-    remoteMap.set(issue.number, issue);
+    remoteMap.set(issue.number, { ...issue, state: issue.state.toLowerCase() });
   }
 
   const localItems = listTasks();

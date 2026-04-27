@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { ensureGithubPrerequisites } from "../lib/config";
 import { getLinkedPRs, commentOnIssue } from "../lib/github";
 import { listTasks, readTask, updateFrontmatter, resolveId } from "../lib/store";
@@ -137,10 +137,11 @@ function cmdStatus(): void {
     let mergeable = "UNKNOWN";
 
     try {
-      const result = execSync(
-        `gh pr view ${t.githubPR} --json number,title,state,mergeable --jq '{number,title,state,mergeable}'`,
+      const result = execFileSync(
+        "gh",
+        ["pr", "view", String(t.githubPR), "--json", "number,title,state,mergeable", "--jq", "{number,title,state,mergeable}"],
         { stdio: "pipe", encoding: "utf-8" }
-      ).trim();
+      ).toString().trim();
       const info = JSON.parse(result);
       state = (info.state as string).toUpperCase();
       mergeable = (info.mergeable as string ?? "UNKNOWN").toUpperCase();
