@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
-import { mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync, rmSync, existsSync,
+  writeFileSync as realWriteFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import * as childProcess from "node:child_process";
 import { run } from "../src/commands/sync";
@@ -13,7 +16,7 @@ let origDir: string;
 
 // --- Mocks ---
 
-const mockExecSync = mock((_cmd: string, _options: any): any => "");
+const mockExecFileSync = mock((_cmd: string, _args: string[], _options: any): any => Buffer.from(""));
 const logSpy = mock((_msg: string, ..._args: any[]) => {});
 const errorSpy = mock((_msg: string, ..._args: any[]) => {});
 const mockExit = mock((_code: number) => {});
@@ -36,7 +39,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 
 function writeTestTask(task: Task, body: string = "## Body"): void {
   const content = serializeTask(task, body);
-  writeFileSync(join(TEST_DIR, ".tasks", `${task.id}.md`), content);
+  realWriteFileSync(join(TEST_DIR, ".tasks", `${task.id}.md`), content);
 }
 
 /** Set up the gh CLI mock with per-command responses. */
@@ -44,24 +47,24 @@ function setupGhMock(responses: {
   issueList?: string;
   issueCreate?: string;
 } = {}): void {
-  mockExecSync.mockImplementation((cmd: string, _options: any): any => {
-    if (cmd === "which gh") return Buffer.from("");
-    if (typeof cmd === "string" && cmd.includes("gh repo view")) return "owner/repo";
-    if (typeof cmd === "string" && cmd.includes("gh issue list"))
-      return responses.issueList ?? "[]";
-    if (typeof cmd === "string" && cmd.includes("gh issue create"))
-      return responses.issueCreate ?? "42";
-    if (typeof cmd === "string" && cmd.includes("gh issue edit")) return "";
-    if (typeof cmd === "string" && cmd.includes("gh issue close")) return "";
-    if (typeof cmd === "string" && cmd.includes("gh issue reopen")) return "";
-    return "";
+  mockExecFileSync.mockImplementation((_cmd: string, args: string[], _options: any): any => {
+    if (args[0] === "--version") return Buffer.from("gh 2.0.0");
+    if (args[0] === "repo" && args[1] === "view") return Buffer.from("owner/repo");
+    if (args[0] === "issue" && args[1] === "list")
+      return Buffer.from(responses.issueList ?? "[]");
+    if (args[0] === "issue" && args[1] === "create")
+      return Buffer.from(responses.issueCreate ?? "42");
+    if (args[0] === "issue" && args[1] === "edit") return Buffer.from("");
+    if (args[0] === "issue" && args[1] === "close") return Buffer.from("");
+    if (args[0] === "issue" && args[1] === "reopen") return Buffer.from("");
+    return Buffer.from("");
   });
 }
 
-/** Filter mockExecSync calls for a gh sub-command substring. */
-function ghCallsContaining(substr: string): any[] {
-  return mockExecSync.mock.calls.filter(
-    (c: any) => typeof c[0] === "string" && c[0].includes(substr),
+/** Filter mockExecFileSync calls for a gh sub-command substring in args. */
+function ghCallsWithArg(substr: string): any[] {
+  return mockExecFileSync.mock.calls.filter(
+    (c: any) => Array.isArray(c[1]) && c[1].some((a: string) => a.includes(substr)),
   );
 }
 
@@ -75,15 +78,15 @@ beforeEach(() => {
   process.chdir(TEST_DIR);
 
   // Clear all mocks
-  mockExecSync.mockClear();
+  mockExecFileSync.mockClear();
   logSpy.mockClear();
   errorSpy.mockClear();
   mockExit.mockClear();
 
-  // Default execSync mock: simulates gh CLI being available
+  // Default mock: simulates gh CLI being available
   setupGhMock();
 
-  spyOn(childProcess, "execSync").mockImplementation(mockExecSync);
+  spyOn(childProcess, "execFileSync").mockImplementation(mockExecFileSync);
   spyOn(console, "log").mockImplementation(logSpy);
   spyOn(console, "error").mockImplementation(errorSpy);
   spyOn(process, "exit").mockImplementation(mockExit as any);
@@ -92,7 +95,7 @@ beforeEach(() => {
 afterEach(() => {
   process.chdir(origDir);
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
-  (childProcess.execSync as any).mockRestore?.();
+  (childProcess.execFileSync as any).mockRestore?.();
   (console.log as any).mockRestore?.();
   (console.error as any).mockRestore?.();
   (process.exit as any).mockRestore?.();
@@ -119,7 +122,7 @@ describe("sync command", () => {
       run(["push"]);
 
       // Verify issue create was called exactly once
-      const createCalls = ghCallsContaining("gh issue create");
+      const createCalls = ghCallsWithArg("create");
       expect(createCalls.length).toBe(1);
 
       // Verify the task file now has githubIssue set
@@ -135,15 +138,15 @@ describe("sync command", () => {
 
       setupGhMock({
         issueList: JSON.stringify([
-          { number: 10, title: "Test task", state: "open", labels: ["task"] },
+          { number: 10, title: "Test task", state: "open", labels: [{ name: "task" }] },
         ]),
       });
 
       run(["push"]);
 
-      const editCalls = ghCallsContaining("gh issue edit");
+      const editCalls = ghCallsWithArg("edit");
       expect(editCalls.length).toBe(1);
-      expect(editCalls[0][0]).toContain("10");
+      expect(editCalls[0][1]).toContain("10");
     });
   });
 
@@ -154,15 +157,15 @@ describe("sync command", () => {
 
       setupGhMock({
         issueList: JSON.stringify([
-          { number: 10, title: "Test task", state: "open", labels: ["task"] },
+          { number: 10, title: "Test task", state: "open", labels: [{ name: "task" }] },
         ]),
       });
 
       run(["push"]);
 
-      const closeCalls = ghCallsContaining("gh issue close");
+      const closeCalls = ghCallsWithArg("close");
       expect(closeCalls.length).toBe(1);
-      expect(closeCalls[0][0]).toContain("10");
+      expect(closeCalls[0][1]).toContain("10");
     });
   });
 
@@ -173,7 +176,7 @@ describe("sync command", () => {
 
       setupGhMock({
         issueList: JSON.stringify([
-          { number: 10, title: "Test task", state: "closed", labels: ["task"] },
+          { number: 10, title: "Test task", state: "closed", labels: [{ name: "task" }] },
         ]),
       });
 
@@ -191,7 +194,7 @@ describe("sync command", () => {
 
       setupGhMock({
         issueList: JSON.stringify([
-          { number: 10, title: "Test task", state: "open", labels: ["task"] },
+          { number: 10, title: "Test task", state: "open", labels: [{ name: "task" }] },
         ]),
       });
 
@@ -210,10 +213,10 @@ describe("sync command", () => {
       run(["check"]);
 
       // No mutating gh commands should be called
-      expect(ghCallsContaining("gh issue create")).toHaveLength(0);
-      expect(ghCallsContaining("gh issue edit")).toHaveLength(0);
-      expect(ghCallsContaining("gh issue close")).toHaveLength(0);
-      expect(ghCallsContaining("gh issue reopen")).toHaveLength(0);
+      expect(ghCallsWithArg("create")).toHaveLength(0);
+      expect(ghCallsWithArg("edit")).toHaveLength(0);
+      expect(ghCallsWithArg("close")).toHaveLength(0);
+      expect(ghCallsWithArg("reopen")).toHaveLength(0);
 
       // Should mention dry run
       const logMessages = logSpy.mock.calls.map((c: any) => c[0]);
@@ -229,7 +232,7 @@ describe("sync command", () => {
 
       run(["push", "--task", "abcd1234"]);
 
-      const createCalls = ghCallsContaining("gh issue create");
+      const createCalls = ghCallsWithArg("create");
       expect(createCalls.length).toBe(1);
 
       // Only the specified task should have been linked

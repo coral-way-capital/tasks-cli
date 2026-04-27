@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { getTasksDir, ensureTaskDir } from "../lib/store";
 
@@ -39,17 +39,18 @@ export function isGithubEnabled(): boolean {
 
 export function ensureGithubPrerequisites(): { owner: string; repo: string } | string {
   try {
-    execSync("which gh", { stdio: "pipe" });
+    execFileSync("which", ["gh"], { stdio: "pipe" });
   } catch {
     return "gh CLI not found. Install it from https://cli.github.com/";
   }
 
   let nameWithOwner: string;
   try {
-    nameWithOwner = execSync(
-      'gh repo view --json nameWithOwner -q .nameWithOwner',
+    nameWithOwner = execFileSync(
+      "gh",
+      ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
       { stdio: "pipe", encoding: "utf-8" }
-    ).trim();
+    ).toString().trim();
   } catch {
     return "Not a GitHub repository. Make sure you're in a repo with a GitHub remote.";
   }

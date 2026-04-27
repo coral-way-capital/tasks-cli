@@ -138,7 +138,7 @@ function cmdStatus(): void {
   // Build lookup for remote issues by number
   const remoteByNumber = new Map<number, { number: number; title: string; state: string; labels: string[] }>();
   for (const issue of remoteIssues) {
-    remoteByNumber.set(issue.number, issue);
+    remoteByNumber.set(issue.number, { ...issue, state: issue.state.toLowerCase() });
   }
 
   // Linked tasks
@@ -163,7 +163,7 @@ function cmdStatus(): void {
       const issueNum = t.githubIssue!;
       const remote = remoteByNumber.get(issueNum);
       const localMapped = statusToIssueState(t.status);
-      const remoteState = remote?.state ?? "unknown";
+      const remoteState = (remote?.state ?? "unknown").toLowerCase();
       const inSync = localMapped.state === remoteState;
       const indicator = inSync ? green("✓") : yellow("⚠");
 
