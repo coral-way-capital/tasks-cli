@@ -3,9 +3,56 @@
  * Called by new/status/done/edit commands when autoSync is enabled.
  */
 import { isGithubEnabled, loadConfig, ensureGithubPrerequisites } from "../lib/config";
-import { createIssue, updateIssue, closeIssue, reopenIssue, listIssues, statusToIssueState } from "../lib/github";
-import { readTask } from "../lib/store";
+import { createIssue, updateIssue, closeIssue, reopenIssue, listIssues, commentOnIssue, statusToIssueState } from "../lib/github";
+import { listTasks, readTask, updateFrontmatter } from "../lib/store";
 import { dim, yellow } from "../lib/format";
+import type { Task } from "../types";
+
+/**
+ * Build dependency-enriched body for a single task auto-sync.
+ * Resolves the full task list to build dependency cross-references.
+ */
+function buildEnrichedBody(task: Task, rawBody: string): string {
+  const allItems = listTasks();
+  const allTasks = allItems.map((i) => i.task as Task);
+  const index = new Map<string, { title: string; githubIssue?: number }>();
+  for (const { task: t } of allItems) {
+    index.set(t.id, { title: t.title, githubIssue: t.githubIssue });
+  }
+
+  const sections: string[] = [];
+
+  if (task.dependsOn.length > 0) {
+    const lines = ["## Dependencies", "", "This task depends on:"];
+    for (const depId of task.dependsOn) {
+      const dep = index.get(depId);
+      if (dep) {
+        const ref = dep.githubIssue ? `#${dep.githubIssue}` : `\`${depId}\``;
+        lines.push(`- ${ref} — ${dep.title}`);
+      } else {
+        lines.push(`- \`${depId}\` (unknown task)`);
+      }
+    }
+    lines.push("");
+    sections.push(lines.join("\n"));
+  }
+
+  const blockedBy = allTasks.filter((t) => t.dependsOn.includes(task.id));
+  if (blockedBy.length > 0) {
+    const lines = ["## Blocks", "", "The following tasks depend on this one:"];
+    for (const b of blockedBy) {
+      const bInfo = index.get(b.id);
+      const ref = bInfo?.githubIssue ? `#${bInfo.githubIssue}` : `\`${b.id}\``;
+      const title = bInfo?.title ?? b.title;
+      lines.push(`- ${ref} — ${title}`);
+    }
+    lines.push("");
+    sections.push(lines.join("\n"));
+  }
+
+  if (sections.length === 0) return rawBody;
+  return sections.join("\n") + "\n" + rawBody;
+}
 
 /**
  * If GitHub integration + autoSync are enabled, push the given task to GitHub.
@@ -29,6 +76,9 @@ export function autoSyncTask(taskId: string): void {
     const { state, labels } = statusToIssueState(task.status);
     const combinedLabels = [...new Set([...defaultLabels, ...labels])];
 
+    // Build dependency-enriched body
+    const enrichedBody = buildEnrichedBody(task as Task, body);
+
     // Fetch remote issues for state comparison
     let remoteStateMap: Map<number, string> | null = null;
     try {
@@ -40,7 +90,7 @@ export function autoSyncTask(taskId: string): void {
 
     if (task.githubIssue !== undefined) {
       // Update existing issue
-      updateIssue(task.githubIssue, task, body, combinedLabels);
+      updateIssue(task.githubIssue, task, enrichedBody, combinedLabels);
 
       // Sync open/closed state
       if (remoteStateMap) {
@@ -57,7 +107,7 @@ export function autoSyncTask(taskId: string): void {
       console.log(dim(`  ↗ Synced to GitHub issue #${task.githubIssue}`));
     } else {
       // Create new issue
-      const issueNumber = createIssue(task, body, combinedLabels);
+      const issueNumber = createIssue(task, enrichedBody, combinedLabels);
 
       // If task is already done/cancelled, close it immediately
       if (state === "closed") {

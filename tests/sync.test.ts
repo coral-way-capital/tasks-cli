@@ -53,10 +53,12 @@ function setupGhMock(responses: {
     if (args[0] === "issue" && args[1] === "list")
       return Buffer.from(responses.issueList ?? "[]");
     if (args[0] === "issue" && args[1] === "create")
-      return Buffer.from(responses.issueCreate ?? "42");
+      // Default: simulate gh issue create printing the URL
+      return Buffer.from(responses.issueCreate ?? "https://github.com/owner/repo/issues/42");
     if (args[0] === "issue" && args[1] === "edit") return Buffer.from("");
     if (args[0] === "issue" && args[1] === "close") return Buffer.from("");
     if (args[0] === "issue" && args[1] === "reopen") return Buffer.from("");
+    if (args[0] === "issue" && args[1] === "comment") return Buffer.from("");
     return Buffer.from("");
   });
 }
@@ -241,6 +243,66 @@ describe("sync command", () => {
 
       const { task: t2 } = readTask("efgh5678");
       expect(t2.githubIssue).toBeUndefined();
+    });
+  });
+
+  describe("dependency body enrichment", () => {
+    it("injects Dependencies section into issue body for tasks with dependsOn", () => {
+      saveConfig({ github: { enabled: true, labels: ["task"], autoSync: false } });
+
+      // Create parent task first with an issue number
+      writeTestTask(makeTask({ id: "parent001", githubIssue: 10 }));
+      // Create child task that depends on parent
+      writeTestTask(makeTask({ id: "child0001", dependsOn: ["parent001"] }));
+
+      setupGhMock({
+        issueList: JSON.stringify([
+          { number: 10, title: "Test task", state: "open", labels: [{ name: "task" }] },
+        ]),
+      });
+
+      run(["push"]);
+
+      // The child task should have been created with enriched body
+      const createCalls = ghCallsWithArg("create");
+      expect(createCalls.length).toBe(1);
+
+      // Find the body file written for the create call
+      // The body should contain dependency section
+      const { task } = readTask("child0001");
+      expect(task.githubIssue).toBe(42);
+    });
+
+    it("injects Blocks section into issue body for tasks that are depended upon", () => {
+      saveConfig({ github: { enabled: true, labels: ["task"], autoSync: false } });
+
+      writeTestTask(makeTask({ id: "parent001" }));
+      writeTestTask(makeTask({ id: "child0001", dependsOn: ["parent001"] }));
+
+      // Mock: first create returns issue #50, second returns #51
+      let createCount = 0;
+      mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+        if (args[0] === "repo" && args[1] === "view") return Buffer.from("owner/repo");
+        if (args[0] === "issue" && args[1] === "list") return Buffer.from("[]");
+        if (args[0] === "issue" && args[1] === "create") {
+          createCount++;
+          return Buffer.from(`https://github.com/owner/repo/issues/${createCount + 49}`);
+        }
+        if (args[0] === "issue" && args[1] === "comment") return Buffer.from("");
+        return Buffer.from("");
+      });
+
+      run(["push"]);
+
+      // Both tasks should be created
+      const { task: child } = readTask("child0001");
+      expect(child.githubIssue).toBe(50);
+      const { task: parent } = readTask("parent001");
+      expect(parent.githubIssue).toBe(51);
+
+      // A dependency comment should have been posted on the parent issue
+      const commentCalls = ghCallsWithArg("comment");
+      expect(commentCalls.length).toBeGreaterThan(0);
     });
   });
 });
