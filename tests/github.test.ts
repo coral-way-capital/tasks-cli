@@ -128,7 +128,8 @@ describe("getRepoInfo", () => {
 describe("createIssue", () => {
   it("creates issue and returns number", () => {
     mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
-      return Buffer.from("42");
+      // Simulate gh issue create output: the issue URL
+      return Buffer.from("https://github.com/owner/repo/issues/42");
     });
 
     const task = makeTask({ title: "New feature" });
@@ -144,7 +145,8 @@ describe("createIssue", () => {
     expect(callArgs).toContain("--label");
     expect(callArgs).toContain("task,feat");
     expect(callArgs).toContain("--body-file");
-    expect(callArgs).toContain("--json");
+    // createIssue no longer uses --json; it parses issue number from URL output
+    expect(callArgs).not.toContain("--json");
 
     // Verify body was written to temp file
     expect(capturedTempFiles.size).toBe(1);
@@ -154,7 +156,8 @@ describe("createIssue", () => {
 
   it("handles backticks in title and body without shell errors", () => {
     mockExecFileSync.mockImplementation((_cmd: string, _args: string[]) => {
-      return Buffer.from("99");
+      // Simulate gh issue create output: the issue URL
+      return Buffer.from("https://github.com/owner/repo/issues/99");
     });
 
     const task = makeTask({ title: "Run `skill:sync` for DOC-disco-sua" });
@@ -184,7 +187,7 @@ describe("updateIssue", () => {
     expect(callArgs).toContain("--title");
     expect(callArgs).toContain("Updated title");
     expect(callArgs).toContain("--body-file");
-    expect(callArgs).toContain("--add-label");
+    expect(callArgs).toContain("--label");
     expect(callArgs).toContain("task,in-progress");
 
     // Verify body was written to temp file

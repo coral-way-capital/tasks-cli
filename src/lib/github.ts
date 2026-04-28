@@ -92,19 +92,28 @@ export function createIssue(task: Task, body: string, labels: string[]): number 
       "issue", "create",
       "--title", task.title,
       "--body-file", bodyFile,
-      "--json", "number",
-      "-q", ".number",
     ];
     if (labels.length > 0) {
       args.push("--label", labels.join(","));
     }
+    // gh issue create prints the issue URL to stdout.
+    // Parse the issue number from it (e.g. "https://github.com/o/r/issues/42")
     const result = execGh(args);
-    return parseInt(result, 10);
+    const match = result.match(/\/(?:issues|pull)\/(\d+)$/);
+    if (!match) {
+      throw new Error(`Could not parse issue number from gh output: ${result}`);
+    }
+    return parseInt(match[1], 10);
   } finally {
     cleanupTempFile(bodyFile);
   }
 }
 
+/**
+ * Remove all labels from an issue, then set the desired ones.
+ * gh issue edit only supports --add-label (no --remove-label for all),
+ * so we clear first via the API, then add.
+ */
 export function updateIssue(issueNumber: number, task: Task, body: string, labels: string[]): void {
   const bodyFile = writeTempFile(body);
   try {
@@ -114,8 +123,9 @@ export function updateIssue(issueNumber: number, task: Task, body: string, label
       "--title", task.title,
       "--body-file", bodyFile,
     ];
+    // Use --label to set the full label set (replaces all labels)
     if (labels.length > 0) {
-      args.push("--add-label", labels.join(","));
+      args.push("--label", labels.join(","));
     }
     execGh(args);
   } finally {

@@ -156,6 +156,14 @@ When `autoSync` is on, `new`, `status`, `done`, and `edit` commands automaticall
 - **State conflict** (local open, remote closed): Remote wins (someone closed it on GitHub)
 - **State conflict** (local done, remote open): Remote wins (someone reopened it)
 
+### Dependency Cross-Referencing
+
+When `tasks sync push` creates GitHub Issues, it automatically:
+
+1. **Injects dependency sections** into each issue body — tasks with `dependsOn` get a `## Dependencies` section with issue number links. Tasks that are depended upon get a `## Blocks` section.
+2. **Posts cross-reference comments** on related issues — upstream issues get `🔓 Blocks: #N` comments, downstream issues get `📦 Depends on: #N` comments.
+3. **Applies config labels** from `.tasks/config.json` (e.g. `["task", "5.6"]`) to all created issues.
+
 ## Configuration
 
 Project-level config lives in `.tasks/config.json`:

@@ -5,11 +5,12 @@ import {
   closeIssue,
   reopenIssue,
   listIssues,
+  commentOnIssue,
   statusToIssueState,
 } from "../lib/github";
 import { listTasks, readTask, updateFrontmatter, resolveId } from "../lib/store";
 import { bold, dim, red, green, yellow } from "../lib/format";
-import type { TaskStatus } from "../types";
+import type { Task, TaskStatus } from "../types";
 
 export function run(args: string[]): void {
   const subcommand = args[0];
@@ -88,6 +89,100 @@ function cmdPull(args: string[]): void {
   doPull(true, args);
 }
 
+// ── Dependency-aware body builder ─────────────────────────────────────────
+
+/**
+ * Build a map of task-id → { title, githubIssue? } for all tasks,
+ * used to resolve dependency cross-references.
+ */
+function buildTaskIndex(items: { task: Task; body: string }[]): Map<string, { title: string; githubIssue?: number }> {
+  const index = new Map<string, { title: string; githubIssue?: number }>();
+  for (const { task } of items) {
+    index.set(task.id, { title: task.title, githubIssue: task.githubIssue });
+  }
+  return index;
+}
+
+/**
+ * Inject dependency and blocks sections into the issue body if the task
+ * has dependsOn or is depended upon by other tasks.
+ *
+ * We insert a structured section at the top of the body (after any existing
+ * frontmatter-parsed content). We avoid duplicating if already present.
+ */
+function buildIssueBody(
+  task: Task,
+  rawBody: string,
+  taskIndex: Map<string, { title: string; githubIssue?: number }>,
+  allTasks: Task[],
+): string {
+  const sections: string[] = [];
+
+  // ── Dependencies section ──
+  if (task.dependsOn.length > 0) {
+    const lines = ["## Dependencies", "", "This task depends on:"];
+    for (const depId of task.dependsOn) {
+      const dep = taskIndex.get(depId);
+      if (dep) {
+        const ref = dep.githubIssue ? `#${dep.githubIssue}` : `\`${depId}\``;
+        lines.push(`- ${ref} — ${dep.title}`);
+      } else {
+        lines.push(`- \`${depId}\` (unknown task)`);
+      }
+    }
+    lines.push("");
+    sections.push(lines.join("\n"));
+  }
+
+  // ── Blocks section ──
+  const blockedBy = allTasks.filter((t) => t.dependsOn.includes(task.id));
+  if (blockedBy.length > 0) {
+    const lines = ["## Blocks", "", "The following tasks depend on this one:"];
+    for (const b of blockedBy) {
+      const bInfo = taskIndex.get(b.id);
+      const ref = bInfo?.githubIssue ? `#${bInfo.githubIssue}` : `\`${b.id}\``;
+      const title = bInfo?.title ?? b.title;
+      lines.push(`- ${ref} — ${title}`);
+    }
+    lines.push("");
+    sections.push(lines.join("\n"));
+  }
+
+  if (sections.length === 0) return rawBody;
+
+  return sections.join("\n") + "\n" + rawBody;
+}
+
+/**
+ * Post cross-reference comments on issues that this task depends on or blocks.
+ * Only posts for newly-created issues to avoid duplicate comments on re-push.
+ */
+function postDependencyComments(
+  task: Task,
+  issueNumber: number,
+  taskIndex: Map<string, { title: string; githubIssue?: number }>,
+  allTasks: Task[],
+): void {
+  // ── Comment on issues this task depends on ──
+  for (const depId of task.dependsOn) {
+    const dep = taskIndex.get(depId);
+    if (dep?.githubIssue) {
+      commentOnIssue(dep.githubIssue, `🔓 **Blocks:** #${issueNumber} — ${task.title}`);
+    }
+  }
+
+  // ── Comment on issues that depend on this one ──
+  const blockedBy = allTasks.filter((t) => t.dependsOn.includes(task.id));
+  for (const b of blockedBy) {
+    const bInfo = taskIndex.get(b.id);
+    if (bInfo?.githubIssue) {
+      commentOnIssue(bInfo.githubIssue, `📦 **Depends on:** #${issueNumber} — ${task.title}`);
+    }
+  }
+}
+
+// ── Push logic ────────────────────────────────────────────────────────────
+
 function doPush(verbose: boolean, args: string[] = []): { created: number; updated: number } {
   const config = loadConfig();
   const defaultLabels = config.github?.labels ?? ["task"];
@@ -116,6 +211,11 @@ function doPush(verbose: boolean, args: string[] = []): { created: number; updat
     items = listTasks();
   }
 
+  // Build dependency index from ALL tasks (not just filtered ones)
+  const allItems = listTasks();
+  const allTasks = allItems.map((i) => i.task as Task);
+  const taskIndex = buildTaskIndex(allItems);
+
   let created = 0;
   let updated = 0;
 
@@ -123,9 +223,12 @@ function doPush(verbose: boolean, args: string[] = []): { created: number; updat
     const mapped = statusToIssueState(task.status as TaskStatus);
     const combinedLabels = [...new Set([...defaultLabels, ...mapped.labels])];
 
+    // Build dependency-enriched body
+    const enrichedBody = buildIssueBody(task as Task, body, taskIndex, allTasks);
+
     if (task.githubIssue !== undefined) {
       // Update existing issue
-      updateIssue(task.githubIssue, task, body, combinedLabels);
+      updateIssue(task.githubIssue, task, enrichedBody, combinedLabels);
 
       const remoteState = remoteStateMap.get(task.githubIssue) ?? "open";
       const isTerminal = task.status === "done" || task.status === "cancelled";
@@ -140,12 +243,23 @@ function doPush(verbose: boolean, args: string[] = []): { created: number; updat
       updated++;
     } else {
       // Create new issue
-      const issueNumber = createIssue(task, body, defaultLabels);
+      const issueNumber = createIssue(task, enrichedBody, defaultLabels);
       updateFrontmatter(task.id, { githubIssue: issueNumber });
 
       const isTerminal = task.status === "done" || task.status === "cancelled";
       if (isTerminal) {
         closeIssue(issueNumber);
+      }
+
+      // Update the taskIndex with the new issue number so later tasks can reference it
+      taskIndex.set(task.id, { title: task.title, githubIssue: issueNumber });
+
+      // Post cross-reference dependency comments
+      try {
+        postDependencyComments(task as Task, issueNumber, taskIndex, allTasks);
+      } catch (e: any) {
+        // Non-blocking: dependency comments are nice-to-have
+        console.error(yellow(`  ⚠ Failed to post dependency comments: ${e.message}`));
       }
 
       console.log(green(`  + Created issue #${issueNumber}: ${task.title}`));

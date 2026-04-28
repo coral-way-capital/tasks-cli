@@ -138,6 +138,15 @@ When enabled in `.tasks/config.json`, every `new`, `status`, `done`, and `edit` 
 - **State conflict** (local open, remote closed): Remote wins (someone closed it on GitHub)
 - **State conflict** (local done, remote open): Remote wins (someone reopened it)
 
+**Dependency cross-referencing (automatic):**
+
+When `tasks sync push` creates GitHub Issues, it automatically:
+1. **Injects dependency sections** into each issue body — tasks with `dependsOn` get a `## Dependencies` section listing their dependencies with issue number links (`#42`) or task IDs (`` `abcd1234` `` for unlinked tasks). Tasks that are depended upon get a `## Blocks` section.
+2. **Posts cross-reference comments** on related issues — when task B depends on task A, a `🔓 Blocks: #B — B title` comment is posted on issue A, and a `📦 Depends on: #A — A title` comment is posted on issue B.
+3. **Config labels** from `.tasks/config.json` are applied to all created issues. Labels like `"5.6"` or `"epic:auth"` are automatically added.
+
+This means you do NOT need to manually add dependency info to task bodies or post cross-reference comments — `sync push` handles it natively.
+
 ### Dependencies
 
 Tasks can declare dependencies on other tasks using `--depends-on <id>`. Dependencies affect:
